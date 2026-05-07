@@ -1,0 +1,527 @@
+<!DOCTYPE html><html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Simulación Epidemia 3D PRO</title><style>
+
+body{
+    margin:0;
+    overflow:hidden;
+    font-family:Arial;
+    background:#0f172a;
+}
+
+#ui{
+    position:absolute;
+    top:10px;
+    left:10px;
+    width:280px;
+    background:rgba(15,23,42,0.92);
+    color:white;
+    padding:18px;
+    border-radius:18px;
+    z-index:10;
+    backdrop-filter:blur(10px);
+}
+
+#ui h2{
+    margin-top:0;
+    text-align:center;
+}
+
+button{
+    width:100%;
+    padding:12px;
+    margin-top:10px;
+    border:none;
+    border-radius:12px;
+    background:#2563eb;
+    color:white;
+    cursor:pointer;
+    font-size:15px;
+}
+
+button:hover{
+    background:#1d4ed8;
+}
+
+input{
+    width:100%;
+}
+
+.stats p{
+    margin:8px 0;
+}
+
+#chartBox{
+    position:absolute;
+    bottom:0;
+    left:0;
+    width:100%;
+    height:230px;
+    background:white;
+}
+
+</style></head><body><div id="ui"><h2>🦠 Epidemia 3D</h2><button id="toggleBtn">▶ Iniciar</button>
+<button id="resetBtn">🔄 Reiniciar</button>
+
+<label>Velocidad</label>
+<input type="range" id="speed" min="100" max="2000" value="500">
+
+<div class="stats">
+<p>📅 Día: <span id="day">0</span></p>
+<p>👥 Total: <span id="total">0</span></p>
+<p>🟢 Sanos: <span id="healthy">0</span></p>
+<p>🔴 Infectados: <span id="infected">0</span></p>
+<p>🔵 Recuperados: <span id="recovered">0</span></p>
+<p>⚫ Fallecidos: <span id="dead">0</span></p>
+</div></div><div id="chartBox">
+<canvas id="chart"></canvas>
+</div><!-- LIBRERÍAS --><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><!-- OrbitControls --><script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script><script>
+
+// ====================
+// CONFIG
+// ====================
+
+const POPULATION = 200;
+const AREA = 30;
+
+const infectionRate = 0.25;
+const recoveryRate = 0.03;
+const mortalityRate = 0.01;
+
+const STATE = {
+    HEALTHY:0,
+    INFECTED:1,
+    RECOVERED:2,
+    DEAD:3
+};
+
+const COLORS = {
+    HEALTHY:0x22c55e,
+    INFECTED:0xef4444,
+    RECOVERED:0x3b82f6,
+    DEAD:0x111111
+};
+
+let people = [];
+let running = false;
+let day = 0;
+let speed = 500;
+let lastStep = 0;
+
+// ====================
+// ESCENA
+// ====================
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f172a);
+
+const camera = new THREE.PerspectiveCamera(
+    70,
+    window.innerWidth/window.innerHeight,
+    0.1,
+    1000
+);
+
+camera.position.set(0,35,35);
+
+const renderer = new THREE.WebGLRenderer({
+    antialias:true
+});
+
+renderer.setSize(window.innerWidth,window.innerHeight);
+
+document.body.appendChild(renderer.domElement);
+
+// CONTROLES DE CÁMARA
+const controls = new THREE.OrbitControls(
+    camera,
+    renderer.domElement
+);
+
+controls.enableDamping = true;
+
+// ====================
+// LUCES
+// ====================
+
+scene.add(new THREE.AmbientLight(0xffffff,0.7));
+
+const light = new THREE.DirectionalLight(0xffffff,1);
+
+light.position.set(20,30,20);
+
+scene.add(light);
+
+// ====================
+// SUELO
+// ====================
+
+const floor = new THREE.Mesh(
+
+    new THREE.PlaneGeometry(100,100),
+
+    new THREE.MeshStandardMaterial({
+        color:0x1e293b
+    })
+);
+
+floor.rotation.x = -Math.PI/2;
+
+scene.add(floor);
+
+// cuadrícula
+const grid = new THREE.GridHelper(
+    100,
+    100,
+    0x334155,
+    0x334155
+);
+
+scene.add(grid);
+
+// ====================
+// PERSONAS
+// ====================
+
+function createPopulation(){
+
+    people.forEach(p=>scene.remove(p.mesh));
+
+    people = [];
+
+    const geometry = new THREE.SphereGeometry(0.4,16,16);
+
+    for(let i=0;i<POPULATION;i++){
+
+        const material = new THREE.MeshStandardMaterial({
+            color:COLORS.HEALTHY
+        });
+
+        const mesh = new THREE.Mesh(
+            geometry,
+            material
+        );
+
+        mesh.position.set(
+            (Math.random()-0.5)*AREA,
+            0.4,
+            (Math.random()-0.5)*AREA
+        );
+
+        scene.add(mesh);
+
+        people.push({
+            mesh,
+            state:STATE.HEALTHY,
+            time:0
+        });
+    }
+
+    // infectados iniciales
+    for(let i=0;i<8;i++){
+        people[i].state = STATE.INFECTED;
+    }
+
+    updateColors();
+    updateStats();
+}
+
+// ====================
+// COLORES
+// ====================
+
+function updateColors(){
+
+    people.forEach(p=>{
+
+        if(p.state===STATE.HEALTHY)
+            p.mesh.material.color.set(COLORS.HEALTHY);
+
+        if(p.state===STATE.INFECTED)
+            p.mesh.material.color.set(COLORS.INFECTED);
+
+        if(p.state===STATE.RECOVERED)
+            p.mesh.material.color.set(COLORS.RECOVERED);
+
+        if(p.state===STATE.DEAD){
+
+            p.mesh.material.color.set(COLORS.DEAD);
+
+            p.mesh.scale.y = 0.2;
+
+            p.mesh.position.y = 0.1;
+        }
+    });
+}
+
+// ====================
+// MOVIMIENTO
+// ====================
+
+function move(p){
+
+    if(p.state===STATE.DEAD) return;
+
+    p.mesh.position.x += (Math.random()-0.5)*0.18;
+    p.mesh.position.z += (Math.random()-0.5)*0.18;
+
+    // límites
+    p.mesh.position.x = Math.max(
+        -AREA/2,
+        Math.min(AREA/2,p.mesh.position.x)
+    );
+
+    p.mesh.position.z = Math.max(
+        -AREA/2,
+        Math.min(AREA/2,p.mesh.position.z)
+    );
+}
+
+// ====================
+// DISTANCIA
+// ====================
+
+function isNear(a,b){
+
+    const dx = a.mesh.position.x - b.mesh.position.x;
+    const dz = a.mesh.position.z - b.mesh.position.z;
+
+    return Math.sqrt(dx*dx + dz*dz) < 1.3;
+}
+
+// ====================
+// SIMULACIÓN
+// ====================
+
+function simulate(){
+
+    people.forEach(move);
+
+    const next = people.map(p=>({...p}));
+
+    people.forEach((p,i)=>{
+
+        const np = next[i];
+
+        // infectados
+        if(p.state===STATE.INFECTED){
+
+            np.time++;
+
+            if(np.time > 8){
+
+                if(Math.random()<mortalityRate){
+
+                    np.state = STATE.DEAD;
+                }
+
+                else if(Math.random()<recoveryRate){
+
+                    np.state = STATE.RECOVERED;
+                }
+            }
+        }
+
+        // sanos
+        if(p.state===STATE.HEALTHY){
+
+            people.forEach(other=>{
+
+                if(
+                    other.state===STATE.INFECTED &&
+                    isNear(p,other)
+                ){
+
+                    if(Math.random()<infectionRate){
+
+                        np.state = STATE.INFECTED;
+                        np.time = 0;
+                    }
+                }
+            });
+        }
+    });
+
+    people.forEach((p,i)=>{
+
+        p.state = next[i].state;
+        p.time = next[i].time;
+    });
+
+    day++;
+
+    updateColors();
+    updateStats();
+}
+
+// ====================
+// ESTADÍSTICAS
+// ====================
+
+const history = {
+    labels:[],
+    healthy:[],
+    infected:[],
+    recovered:[],
+    dead:[]
+};
+
+const chart = new Chart(
+
+    document.getElementById("chart"),
+
+    {
+        type:"line",
+
+        data:{
+            labels:[],
+
+            datasets:[
+                {
+                    label:"Sanos",
+                    data:[],
+                    borderColor:"green"
+                },
+                {
+                    label:"Infectados",
+                    data:[],
+                    borderColor:"red"
+                },
+                {
+                    label:"Recuperados",
+                    data:[],
+                    borderColor:"blue"
+                },
+                {
+                    label:"Muertos",
+                    data:[],
+                    borderColor:"black"
+                }
+            ]
+        },
+
+        options:{
+            responsive:true,
+            animation:false
+        }
+    }
+);
+
+function updateStats(){
+
+    let healthy = 0;
+    let infected = 0;
+    let recovered = 0;
+    let dead = 0;
+
+    people.forEach(p=>{
+
+        if(p.state===STATE.HEALTHY) healthy++;
+        if(p.state===STATE.INFECTED) infected++;
+        if(p.state===STATE.RECOVERED) recovered++;
+        if(p.state===STATE.DEAD) dead++;
+    });
+
+    document.getElementById("day").textContent = day;
+    document.getElementById("total").textContent = people.length;
+    document.getElementById("healthy").textContent = healthy;
+    document.getElementById("infected").textContent = infected;
+    document.getElementById("recovered").textContent = recovered;
+    document.getElementById("dead").textContent = dead;
+
+    history.labels.push(day);
+    history.healthy.push(healthy);
+    history.infected.push(infected);
+    history.recovered.push(recovered);
+    history.dead.push(dead);
+
+    chart.data.labels = history.labels;
+
+    chart.data.datasets[0].data = history.healthy;
+    chart.data.datasets[1].data = history.infected;
+    chart.data.datasets[2].data = history.recovered;
+    chart.data.datasets[3].data = history.dead;
+
+    chart.update();
+}
+
+// ====================
+// LOOP
+// ====================
+
+function animate(time){
+
+    requestAnimationFrame(animate);
+
+    controls.update();
+
+    speed = document.getElementById("speed").value;
+
+    if(running && time-lastStep > speed){
+
+        simulate();
+
+        lastStep = time;
+    }
+
+    renderer.render(scene,camera);
+}
+
+// ====================
+// BOTONES
+// ====================
+
+document.getElementById("toggleBtn")
+.onclick = ()=>{
+
+    running = !running;
+
+    document.getElementById("toggleBtn")
+    .textContent =
+        running ? "⏸ Pausar" : "▶ Iniciar";
+};
+
+document.getElementById("resetBtn")
+.onclick = ()=>{
+
+    day = 0;
+
+    history.labels = [];
+    history.healthy = [];
+    history.infected = [];
+    history.recovered = [];
+    history.dead = [];
+
+    chart.data.labels = [];
+
+    chart.data.datasets.forEach(
+        d=>d.data=[]
+    );
+
+    createPopulation();
+};
+
+// ====================
+// RESIZE
+// ====================
+
+window.addEventListener("resize",()=>{
+
+    camera.aspect =
+        window.innerWidth/window.innerHeight;
+
+    camera.updateProjectionMatrix();
+
+    renderer.setSize(
+        window.innerWidth,
+        window.innerHeight
+    );
+});
+
+// iniciar
+createPopulation();
+animate();
+
+</script></body>
+</html>
