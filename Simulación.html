@@ -1,0 +1,284 @@
+<!DOCTYPE html><html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Simulación Epidemia 3D PRO</title><style>
+body { margin:0; overflow:hidden; background:#000; font-family:Arial; }
+
+#ui {
+position:absolute;
+top:10px;
+left:10px;
+background:rgba(0,0,0,0.6);
+color:white;
+padding:10px;
+border-radius:10px;
+width:220px;
+}
+
+button, input {
+margin:5px 0;
+width:100%;
+}
+
+#chartContainer{
+position:absolute;
+bottom:0;
+left:0;
+width:100%;
+height:250px;
+background:#fff;
+}
+</style></head><body><div id="ui">
+<h3>Simulación</h3><button onclick="toggleSim()">▶ Iniciar / Pausar</button>
+<button onclick="reset()">🔄 Reiniciar</button>
+
+<label>Velocidad</label>
+<input type="range" min="100" max="1500" value="400" id="speed">
+
+<hr><p>Día: <span id="day">0</span></p>
+<p>🟢 S: <span id="s"></span></p>
+<p>🔴 I: <span id="i"></span></p>
+<p>🔵 R: <span id="r"></span></p>
+<p>⚫ D: <span id="d"></span></p>
+</div><div id="chartContainer">
+<canvas id="chart"></canvas>
+</div><!-- LIBRERÍAS --><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script><script src="https://cdn.jsdelivr.net/npm/three@0.134/examples/js/controls/OrbitControls.js"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script>
+
+// CONFIG
+const POP = 200;
+const AREA = 20;
+
+const INFECTION = 0.3;
+const RECOVERY = 0.05;
+const MORTALITY = 0.02;
+const MIN_TIME = 5;
+
+const STATE = {S:0,I:1,R:2,D:3};
+
+// ESCENA
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight,0.1,1000);
+camera.position.set(0,25,30);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera,renderer.domElement);
+
+// luces
+scene.add(new THREE.AmbientLight(0xffffff,0.6));
+const light = new THREE.DirectionalLight(0xffffff,1);
+light.position.set(10,20,10);
+scene.add(light);
+
+// suelo
+const plane = new THREE.Mesh(
+new THREE.PlaneGeometry(100,100),
+new THREE.MeshStandardMaterial({color:0x222222})
+);
+plane.rotation.x = -Math.PI/2;
+scene.add(plane);
+
+// población
+let people = [];
+let running = false;
+let day = 0;
+let lastTime = 0;
+let speed = 400;
+
+// crear personas
+function createPopulation(){
+people.forEach(p=>scene.remove(p.mesh));
+people=[];
+
+const geo = new THREE.BoxGeometry(0.7,0.7,0.7);
+
+for(let i=0;i<POP;i++){
+let mat = new THREE.MeshStandardMaterial({color:0x00ff00});
+let cube = new THREE.Mesh(geo,mat);
+
+cube.position.set(
+(Math.random()-0.5)*AREA,
+0.5,
+(Math.random()-0.5)*AREA
+);
+
+scene.add(cube);
+
+people.push({
+mesh:cube,
+state:STATE.S,
+t:0
+});
+}
+
+// infectados iniciales
+for(let i=0;i<5;i++){
+let p = people[Math.floor(Math.random()*people.length)];
+p.state = STATE.I;
+}
+
+updateColors();
+}
+
+// colores
+function updateColors(){
+people.forEach(p=>{
+if(p.state===STATE.S) p.mesh.material.color.set(0x00ff00);
+if(p.state===STATE.I) p.mesh.material.color.set(0xff0000);
+if(p.state===STATE.R) p.mesh.material.color.set(0x0000ff);
+if(p.state===STATE.D){
+p.mesh.material.color.set(0x000000);
+p.mesh.scale.y = 0.3;
+p.mesh.position.y = 0.2;
+}
+});
+}
+
+// movimiento
+function move(p){
+if(p.state===STATE.D) return;
+
+p.mesh.position.x += (Math.random()-0.5)*0.3;
+p.mesh.position.z += (Math.random()-0.5)*0.3;
+}
+
+// distancia
+function near(a,b){
+let dx = a.mesh.position.x - b.mesh.position.x;
+let dz = a.mesh.position.z - b.mesh.position.z;
+return Math.sqrt(dxdx+dzdz) < 1.5;
+}
+
+// step
+function step(){
+
+people.forEach(p=>move(p));
+
+let next = people.map(p=>({...p}));
+
+people.forEach((p,i)=>{
+let np = next[i];
+
+if(p.state===STATE.I){
+np.t++;
+
+if(np.t > MIN_TIME){
+if(Math.random()<MORTALITY) np.state=STATE.D;
+else if(Math.random()<RECOVERY) np.state=STATE.R;
+}
+}
+
+if(p.state===STATE.S){
+people.forEach(n=>{
+if(n.state===STATE.I && near(p,n)){
+if(Math.random()<INFECTION){
+np.state=STATE.I;
+np.t=0;
+}
+}
+});
+}
+});
+
+people.forEach((p,i)=>{
+p.state = next[i].state;
+p.t = next[i].t;
+});
+
+updateColors();
+updateStats();
+
+day++;
+document.getElementById("day").textContent = day;
+}
+
+// STATS + GRÁFICA
+let history = {S:[],I:[],R:[],D:[],day:[]};
+
+const chart = new Chart(document.getElementById("chart"),{
+type:'line',
+data:{
+labels:[],
+datasets:[
+{label:"S",data:[],borderColor:"green"},
+{label:"I",data:[],borderColor:"red"},
+{label:"R",data:[],borderColor:"blue"},
+{label:"D",data:[],borderColor:"black"}
+]
+},
+options:{animation:false}
+});
+
+function updateStats(){
+
+let s=0,i=0,r=0,d=0;
+
+people.forEach(p=>{
+if(p.state===0)s++;
+if(p.state===1)i++;
+if(p.state===2)r++;
+if(p.state===3)d++;
+});
+
+document.getElementById("s").textContent=s;
+document.getElementById("i").textContent=i;
+document.getElementById("r").textContent=r;
+document.getElementById("d").textContent=d;
+
+history.S.push(s);
+history.I.push(i);
+history.R.push(r);
+history.D.push(d);
+history.day.push(day);
+
+chart.data.labels = history.day;
+chart.data.datasets[0].data = history.S;
+chart.data.datasets[1].data = history.I;
+chart.data.datasets[2].data = history.R;
+chart.data.datasets[3].data = history.D;
+
+chart.update();
+}
+
+// loop
+function animate(time){
+requestAnimationFrame(animate);
+
+speed = document.getElementById("speed").value;
+
+if(running && time-lastTime > speed){
+step();
+lastTime = time;
+}
+
+controls.update();
+renderer.render(scene,camera);
+}
+
+// controles
+function toggleSim(){ running=!running; }
+
+function reset(){
+day=0;
+history={S:[],I:[],R:[],D:[],day:[]};
+chart.data.labels=[];
+chart.data.datasets.forEach(d=>d.data=[]);
+createPopulation();
+}
+
+// resize
+window.addEventListener("resize",()=>{
+camera.aspect=innerWidth/innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(innerWidth,innerHeight);
+});
+
+// iniciar
+createPopulation();
+animate();
+
+</script></body>
+</html>
